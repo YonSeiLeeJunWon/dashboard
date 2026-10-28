@@ -6,7 +6,6 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch: # 깃허브 웹에서 'Run workflow' 버튼으로 수동 실행 가능
 
-# Git Push 권한 부여
 permissions:
   contents: write
 
@@ -33,7 +32,8 @@ jobs:
     - name: Run Automation Script
       env:
         NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }}
-        PYTHONPATH: ${{ github.workspace }}
+        PYTHONPATH: .
+        TZ: "Asia/Seoul"
       run: |
         python auto_github_action.py
 
@@ -42,10 +42,8 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # 데이터 엑셀 및 대시보드 HTML 변경사항 등록
         git add DATA/IN/보험뉴스_Data.xlsx DATA/OUT/보험회사_종합분석_대시보드.html index.html
         
-        # 변경사항이 있을 때만 커밋 및 푸시
         if ! git diff --staged --quiet; then
           git commit -m "Auto update: Insurance News & Dashboard [$(date +'%Y-%m-%d')]"
           git push

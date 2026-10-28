@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import time
+import importlib.util
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
@@ -10,7 +11,7 @@ from pathlib import Path
 import json
 
 # ============================================================
-# 0. 경로 설정 및 sys.path 기본 등록
+# 0. 경로 설정 및 모듈 참조 경로(sys.path) 최우선 등록
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -294,13 +295,17 @@ def save_or_update_excel(new_data_dict):
 def generate_dashboard_and_sync():
     print("\n[2/3] 대시보드 HTML 파일 생성 중...")
     
-    # 모듈 참조 경로 추가
-    current_dir = str(Path(__file__).resolve().parent)
-    if current_dir not in sys.path:
-        sys.path.insert(0, current_dir)
+    # auto_dashboard_module.py 모듈 동적 로드 (경로 에러 100% 방지)
+    module_path = BASE_DIR / "auto_dashboard_module.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"⚠️ {module_path} 파일이 존재하지 않습니다.")
     
-    # auto_dashboard_module.py 모듈 호출
-    from auto_dashboard_module import build_dashboard
+    spec = importlib.util.spec_from_file_location("auto_dashboard_module", module_path)
+    auto_dashboard_module = importlib.util.module_from_spec(spec)
+    sys.modules["auto_dashboard_module"] = auto_dashboard_module
+    spec.loader.exec_module(auto_dashboard_module)
+    
+    build_dashboard = auto_dashboard_module.build_dashboard
     output_html_path = build_dashboard(data_dir=DATA_IN_DIR)
     
     with open(output_html_path, "r", encoding="utf-8") as f_src:

@@ -4,7 +4,11 @@ on:
   schedule:
     # 매일 한국 시간(KST) 오전 9시 (UTC 00:00) 자동 실행
     - cron: '0 0 * * *'
-  workflow_dispatch: # 깃허브 웹에서 'Run workflow' 버튼으로 수동 실행도 가능
+  workflow_dispatch: # 깃허브 웹에서 'Run workflow' 버튼으로 수동 실행 가능
+
+# Git Push 권한 부여 (필수)
+permissions:
+  contents: write
 
 jobs:
   build-and-deploy:
@@ -13,6 +17,8 @@ jobs:
     steps:
     - name: Check out repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Git 히스토리를 전체 가져와 동기화 오류 방지
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -27,7 +33,7 @@ jobs:
 
     - name: Run Automation Script
       env:
-        NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }} # (선택사항) 네이버 보안 쿠키 필요 시
+        NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }} # Repository Secrets에 등록한 쿠키 전달
       run: |
         python auto_github_action.py
 
@@ -36,7 +42,7 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # 데이터 엑셀 및 대시보드 html 변경사항 등록
+        # 데이터 엑셀 및 대시보드 HTML 변경사항 등록
         git add DATA/IN/보험뉴스_Data.xlsx DATA/OUT/보험회사_종합분석_대시보드.html index.html
         
         # 변경사항이 있을 때만 커밋 및 푸시

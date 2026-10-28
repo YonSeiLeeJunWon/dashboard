@@ -56,16 +56,30 @@ PRESS_NAMES = ["경북도민일보", "아주경제", "매일경제", "한국경�
 CLUB_ID = "31337941"
 MENU_ID = "1"
 
-HEADERS_MOBILE = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+# 클라우드 IP 차단 우회용 네이버 브라우저 완벽 모사 헤더
+HEADERS_MOBILE_FULL = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": f"https://m.cafe.naver.com/ca-fe/web/cafes/{CLUB_ID}/menus/{MENU_ID}"
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://m.cafe.naver.com",
+    "Referer": f"https://m.cafe.naver.com/ca-fe/web/cafes/{CLUB_ID}/menus/{MENU_ID}",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin"
 }
 
-HEADERS_PC = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+HEADERS_PC_FULL = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.boardtype=L",
+    "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin"
 }
 
 def clean_sheet_name(name):
@@ -170,35 +184,45 @@ def crawl_naver_cafe_news_auto():
         start_date = now_kst - timedelta(days=3)
         print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
 
-    print("\n🔍 [검증] 모바일 API 기반 네이버 카페 게시글 조회 시도 중...")
-    
-    session = requests.Session()
-    session.headers.update(HEADERS_MOBILE)
-    
     naver_cookie = os.getenv("NAVER_COOKIE")
-    if naver_cookie:
-        session.headers.update({"Cookie": naver_cookie})
-        print("🔑 NAVER_COOKIE 환경변수가 헤더에 적용되었습니다.")
-
-    # 1. 모바일 API를 통한 1차 게시글 목록 검증
-    api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page=1"
     
+    # [시도 1] 모바일 REST API 방식
+    print("\n🔍 [1차 시도] 모바일 REST API 우회 수집 중...")
+    session_m = requests.Session()
+    session_m.headers.update(HEADERS_MOBILE_FULL)
+    if naver_cookie:
+        session_m.headers.update({"Cookie": naver_cookie})
+
+    api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page=1"
     try:
-        api_resp = session.get(api_url, timeout=10)
+        api_resp = session_m.get(api_url, timeout=10)
         if api_resp.status_code == 200:
             res_json = api_resp.json()
             article_list = res_json.get("message", {}).get("result", {}).get("articleList", [])
             if article_list:
-                print(f"✅ [조회 성공] 모바일 API로 게시글 {len(article_list)}개가 정상 조회되었습니다. 뉴스 크롤링을 시작합니다.\n")
-                return crawl_via_mobile_api(session, start_date=start_date, end_date=now_kst)
-
+                print(f"✅ [1차 성공] 모바일 API로 게시글 {len(article_list)}개가 발견되었습니다.")
+                return crawl_via_mobile_api(session_m, start_date=start_date, end_date=now_kst)
     except Exception as e:
-        print(f"⚠️ 모바일 API 접속 실패: {e}")
+        print(f"⚠️ 1차 모바일 API 접속 실패: {e}")
 
-    # 2. 모바일 API 실패 시 PC 버전 HTML 수집 방식으로 2차 시도 (Fallback)
-    print("🔄 PC 버전을 통해 2차 조회를 시도합니다...")
+    # [시도 2] 모바일 Ajax Endpoint 방식
+    print("🔄 [2차 시도] 모바일 Ajax 목록 수집 중...")
+    ajax_url = f"https://m.cafe.naver.com/ArticleListAjax.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.page=1"
+    try:
+        ajax_resp = session_m.get(ajax_url, timeout=10)
+        if ajax_resp.status_code == 200:
+            ajax_soup = BeautifulSoup(ajax_resp.text, "html.parser")
+            items = ajax_soup.select("li, .board_box, a.article")
+            if items:
+                print(f"✅ [2차 성공] Ajax 엔드포인트로 {len(items)}개 게시글을 확인했습니다.")
+                return crawl_via_mobile_ajax(session_m, start_date=start_date, end_date=now_kst)
+    except Exception as e:
+        print(f"⚠️ 2차 Ajax 접속 실패: {e}")
+
+    # [시도 3] PC Cafe Main Frame 파싱 방식
+    print("🔄 [3차 시도] PC 버전 우회 파싱 수집 중...")
     session_pc = requests.Session()
-    session_pc.headers.update(HEADERS_PC)
+    session_pc.headers.update(HEADERS_PC_FULL)
     if naver_cookie:
         session_pc.headers.update({"Cookie": naver_cookie})
 
@@ -215,11 +239,10 @@ def crawl_naver_cafe_news_auto():
 
         rows = pc_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
         if rows:
-            print(f"✅ [PC 버전 조회 성공] 게시글 {len(rows)}개가 조회되었습니다. 크롤링을 시작합니다.\n")
+            print(f"✅ [3차 성공] PC 버전으로 게시글 {len(rows)}개가 확인되었습니다.")
             return crawl_via_pc_html(session_pc, pc_base_url, start_date=start_date, end_date=now_kst)
-
-    except Exception as pc_err:
-        print(f"⚠️ PC 버전 접속 실패: {pc_err}")
+    except Exception as e:
+        print(f"⚠️ 3차 PC 버전 접속 실패: {e}")
 
     print("\n=======================================================")
     print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
@@ -263,6 +286,37 @@ def crawl_via_mobile_api(session, start_date, end_date):
                 if art_data[cat]:
                     all_collected_data[cat].extend(art_data[cat])
                     
+        page += 1
+        
+    save_or_update_excel(all_collected_data)
+    return True
+
+def crawl_via_mobile_ajax(session, start_date, end_date):
+    all_collected_data = {cat: [] for cat in CATEGORIES}
+    page = 1
+    stop_crawling = False
+    
+    while not stop_crawling and page <= 10:
+        ajax_url = f"https://m.cafe.naver.com/ArticleListAjax.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.page={page}"
+        resp = session.get(ajax_url)
+        if resp.status_code != 200:
+            break
+            
+        soup = BeautifulSoup(resp.text, "html.parser")
+        links = soup.select("a.article, li a")
+        if not links:
+            break
+            
+        for a in links:
+            href = a.get("href", "")
+            if "articleid=" in href:
+                art_url = f"https://m.cafe.naver.com{href}" if href.startswith("/") else href
+                art_resp = session.get(art_url)
+                sub_soup = BeautifulSoup(art_resp.text, "html.parser")
+                parsed_date, art_data = parse_article_content(sub_soup, fallback_date=datetime.now().strftime("%Y.%m.%d"))
+                for cat in CATEGORIES:
+                    if art_data[cat]:
+                        all_collected_data[cat].extend(art_data[cat])
         page += 1
         
     save_or_update_excel(all_collected_data)

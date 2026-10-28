@@ -1,7 +1,7 @@
 name: Daily Insurance News & Dashboard Update
 
 on:
-  schedule:
+ # schedule:
     # 매일 한국 시간(KST) 오전 9시 (UTC 00:00) 자동 실행
     - cron: '0 0 * * *'
   workflow_dispatch: # 깃허브 웹에서 'Run workflow' 버튼으로 수동 실행 가능

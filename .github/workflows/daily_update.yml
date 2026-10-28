@@ -33,9 +33,9 @@ jobs:
     - name: Run Automation Script
       env:
         NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }}
-        PYTHONPATH: .
+        PYTHONPATH: ${{ github.workspace }}
       run: |
-        python -m auto_github_action
+        python auto_github_action.py
 
     - name: Commit and Push Updated Files
       run: |

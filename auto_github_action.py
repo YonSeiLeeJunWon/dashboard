@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta
 import pandas as pd
@@ -9,9 +10,12 @@ from pathlib import Path
 import json
 
 # ============================================================
-# 0. 경로 설정 (GitHub Actions 서버 전용 상대 경로)
+# 0. 경로 및 모듈 참조 설정 (GitHub Actions 서버 전용)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 DATA_IN_DIR = BASE_DIR / "DATA" / "IN"
 DATA_OUT_DIR = BASE_DIR / "DATA" / "OUT"
 
@@ -153,11 +157,9 @@ def crawl_naver_cafe_news_auto():
     latest_dt = get_latest_collected_date()
     
     if latest_dt:
-        # 가장 최근 수집된 날짜의 1일 전부터 보수적으로 수집 시작
         start_date = latest_dt - timedelta(days=1)
         print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 보수적 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
     else:
-        # 기존 데이터가 없을 경우 기본 3일전부터 수집
         start_date = now - timedelta(days=3)
         print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
 
@@ -170,7 +172,6 @@ def crawl_naver_cafe_news_auto():
     session = requests.Session()
     session.headers.update(HEADERS)
     
-    # Secrets 환경변수에 등록된 쿠키가 있다면 적용
     naver_cookie = os.getenv("NAVER_COOKIE")
     if naver_cookie:
         session.headers.update({"Cookie": naver_cookie})
@@ -184,7 +185,6 @@ def crawl_naver_cafe_news_auto():
         resp = session.get(target_page_url)
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 카페 메인 프레임 URL 추출
         iframe = soup.select_one("#cafe_main")
         if iframe and iframe.has_attr("src"):
             iframe_url = "https://cafe.naver.com" + iframe["src"]
@@ -268,7 +268,6 @@ def save_or_update_excel(new_data_dict):
             if existing_file_path and os.path.exists(existing_file_path):
                 try:
                     existing_df = pd.read_excel(existing_file_path, sheet_name=sheet_title)
-                    # 기존 데이터 + 신규 데이터 병합
                     combined_df = pd.concat([existing_df, new_df], ignore_index=True)
                 except Exception:
                     combined_df = new_df
@@ -276,10 +275,10 @@ def save_or_update_excel(new_data_dict):
                 combined_df = new_df
 
             if not combined_df.empty and "기사 주소" in combined_df.columns:
-                # keep='first'로 설정하여 기존에 존재하던 행(메모 칼럼 등 포함)을 우선 유지하고 중복 제거
-                combined_df.drop_duplicates(subset=["기사 주소"], keep="first", inplace=True)
+                # inplace 경고 해제를 위해 재할당 방식으로 변경
+                combined_df = combined_df.drop_duplicates(subset=["기사 주소"], keep="first")
                 if "연월일" in combined_df.columns:
-                    combined_df.sort_values(by="연월일", ascending=False, inplace=True)
+                    combined_df = combined_df.sort_values(by="연월일", ascending=False)
             combined_df.to_excel(writer, sheet_name=sheet_title, index=False)
 
     if os.path.exists(NEWS_FILE_PATH):
@@ -300,7 +299,6 @@ def generate_dashboard_and_sync():
     from auto_dashboard_module import build_dashboard
     output_html_path = build_dashboard(data_dir=DATA_IN_DIR)
     
-    # 대시보드 HTML 생성물을 root의 index.html로 복사
     with open(output_html_path, "r", encoding="utf-8") as f_src:
         html_content = f_src.read()
 

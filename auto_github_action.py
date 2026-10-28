@@ -69,6 +69,30 @@ def extract_valid_date(text):
             return f"{year}.{month}.{day}"
     return ""
 
+def get_latest_collected_date():
+    """기존 엑셀 파일에서 가장 최근 수집된 뉴스 날짜를 반환 (없으면 None)"""
+    if not os.path.exists(NEWS_FILE_PATH):
+        return None
+    
+    latest_date = None
+    try:
+        xls = pd.ExcelFile(NEWS_FILE_PATH)
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            if not df.empty and "연월일" in df.columns:
+                valid_dates = df["연월일"].dropna().astype(str)
+                for d_str in valid_dates:
+                    try:
+                        parsed_dt = datetime.strptime(d_str.strip(), "%Y.%m.%d")
+                        if latest_date is None or parsed_dt > latest_date:
+                            latest_date = parsed_dt
+                    except ValueError:
+                        continue
+    except Exception as e:
+        print(f"⚠️ 기존 엑셀 날짜 읽기 중 경고: {e}")
+    
+    return latest_date
+
 # ============================================================
 # 1. 크롤링 로직 (HTTP Request 기반)
 # ============================================================
@@ -126,11 +150,20 @@ def parse_article_content(soup, fallback_date=""):
 
 def crawl_naver_cafe_news_auto():
     now = datetime.now()
-    start_date_str = (now - timedelta(days=3)).strftime("%Y.%m.%d")
-    end_date_str = now.strftime("%Y.%m.%d")
+    latest_dt = get_latest_collected_date()
     
-    start_date = datetime.strptime(start_date_str, "%Y.%m.%d")
-    end_date = datetime.strptime(end_date_str, "%Y.%m.%d")
+    if latest_dt:
+        # 가장 최근 수집된 날짜의 1일 전부터 보수적으로 수집 시작
+        start_date = latest_dt - timedelta(days=1)
+        print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 보수적 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
+    else:
+        # 기존 데이터가 없을 경우 기본 3일전부터 수집
+        start_date = now - timedelta(days=3)
+        print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
+
+    end_date = now
+    start_date_str = start_date.strftime("%Y.%m.%d")
+    end_date_str = end_date.strftime("%Y.%m.%d")
     
     print(f"\n[1/3] 클라우드 서버에서 뉴스 수집 시작: {start_date_str} ~ {end_date_str}")
     
@@ -231,9 +264,11 @@ def save_or_update_excel(new_data_dict):
         for cat in CATEGORIES:
             sheet_title = clean_sheet_name(cat)
             new_df = pd.DataFrame(data_dict[cat])
+            
             if existing_file_path and os.path.exists(existing_file_path):
                 try:
                     existing_df = pd.read_excel(existing_file_path, sheet_name=sheet_title)
+                    # 기존 데이터 + 신규 데이터 병합
                     combined_df = pd.concat([existing_df, new_df], ignore_index=True)
                 except Exception:
                     combined_df = new_df
@@ -241,6 +276,7 @@ def save_or_update_excel(new_data_dict):
                 combined_df = new_df
 
             if not combined_df.empty and "기사 주소" in combined_df.columns:
+                # keep='first'로 설정하여 기존에 존재하던 행(메모 칼럼 등 포함)을 우선 유지하고 중복 제거
                 combined_df.drop_duplicates(subset=["기사 주소"], keep="first", inplace=True)
                 if "연월일" in combined_df.columns:
                     combined_df.sort_values(by="연월일", ascending=False, inplace=True)

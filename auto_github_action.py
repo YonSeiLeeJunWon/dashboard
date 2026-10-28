@@ -56,11 +56,15 @@ PRESS_NAMES = ["경북도민일보", "아주경제", "매일경제", "한국경�
 CLUB_ID = "31337941"
 MENU_ID = "1"
 
-# 모바일 네이버 카페 URL 사용 (iframe 및 캡차 방지 우회)
-BASE_URL = f"https://m.cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}"
-
-HEADERS = {
+HEADERS_MOBILE = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": f"https://m.cafe.naver.com/ca-fe/web/cafes/{CLUB_ID}/menus/{MENU_ID}"
+}
+
+HEADERS_PC = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
@@ -157,75 +161,92 @@ def parse_article_content(soup, fallback_date=""):
 
 def crawl_naver_cafe_news_auto():
     now_kst = datetime.now(KST).replace(tzinfo=None)
+    latest_dt = get_latest_collected_date()
     
-    print("\n🔍 [검증] 모바일 네이버 카페 접근 및 글 조회 가능 여부 확인 중...")
+    if latest_dt:
+        start_date = latest_dt - timedelta(days=1)
+        print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
+    else:
+        start_date = now_kst - timedelta(days=3)
+        print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
+
+    print("\n🔍 [검증] 모바일 API 기반 네이버 카페 게시글 조회 시도 중...")
+    
     session = requests.Session()
-    session.headers.update(HEADERS)
+    session.headers.update(HEADERS_MOBILE)
     
     naver_cookie = os.getenv("NAVER_COOKIE")
     if naver_cookie:
         session.headers.update({"Cookie": naver_cookie})
-        print("🔑 NAVER_COOKIE 적용 완료.")
-    else:
-        print("⚠️ NAVER_COOKIE 미설정 상태.")
+        print("🔑 NAVER_COOKIE 환경변수가 헤더에 적용되었습니다.")
 
+    # 1. 모바일 API를 통한 1차 게시글 목록 검증
+    api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page=1"
+    
     try:
-        check_resp = session.get(BASE_URL, timeout=10)
-        check_soup = BeautifulSoup(check_resp.text, "html.parser")
+        api_resp = session.get(api_url, timeout=10)
+        if api_resp.status_code == 200:
+            res_json = api_resp.json()
+            article_list = res_json.get("message", {}).get("result", {}).get("articleList", [])
+            if article_list:
+                print(f"✅ [조회 성공] 모바일 API로 게시글 {len(article_list)}개가 정상 조회되었습니다. 뉴스 크롤링을 시작합니다.\n")
+                return crawl_via_mobile_api(session, start_date=start_date, end_date=now_kst)
+
+    except Exception as e:
+        print(f"⚠️ 모바일 API 접속 실패: {e}")
+
+    # 2. 모바일 API 실패 시 PC 버전 HTML 수집 방식으로 2차 시도 (Fallback)
+    print("🔄 PC 버전을 통해 2차 조회를 시도합니다...")
+    session_pc = requests.Session()
+    session_pc.headers.update(HEADERS_PC)
+    if naver_cookie:
+        session_pc.headers.update({"Cookie": naver_cookie})
+
+    pc_base_url = f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.boardtype=L"
+    try:
+        pc_resp = session_pc.get(pc_base_url, timeout=10)
+        pc_soup = BeautifulSoup(pc_resp.text, "html.parser")
         
-        # PC / 모바일 태그 선택자 지원
-        check_rows = check_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tr, li.board_box, ul.article-list li")
-        
-        if not check_rows:
-            # 모바일 API 직접 수출 시도
-            api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page=1"
-            api_resp = session.get(api_url, timeout=10)
-            if api_resp.status_code == 200:
-                try:
-                    res_json = api_resp.json()
-                    article_list = res_json.get("message", {}).get("result", {}).get("articleList", [])
-                    if article_list:
-                        print(f"✅ [API 조회 성공] 모바일 API를 통해 게시글 {len(article_list)}개를 확인했습니다.")
-                        return crawl_via_mobile_api(session, start_date=now_kst - timedelta(days=3), end_date=now_kst)
-                except Exception:
-                    pass
+        iframe = pc_soup.select_one("#cafe_main")
+        if iframe and iframe.has_attr("src"):
+            iframe_url = "https://cafe.naver.com" + iframe["src"]
+            pc_resp = session_pc.get(iframe_url, timeout=10)
+            pc_soup = BeautifulSoup(pc_resp.text, "html.parser")
 
-            print("\n=======================================================")
-            print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
-            print("👉 이유: NAVER_COOKIE 세션 만료, 캡차 차단 또는 해외 IP 제약")
-            print("=======================================================\n")
-            return False
+        rows = pc_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
+        if rows:
+            print(f"✅ [PC 버전 조회 성공] 게시글 {len(rows)}개가 조회되었습니다. 크롤링을 시작합니다.\n")
+            return crawl_via_pc_html(session_pc, pc_base_url, start_date=start_date, end_date=now_kst)
 
-        print("✅ [조회 성공 확인] 네이버 카페 게시글 조회가 정상 확인되었습니다.\n")
+    except Exception as pc_err:
+        print(f"⚠️ PC 버전 접속 실패: {pc_err}")
 
-    except Exception as check_err:
-        print(f"\n❌ [조회 오류] 접속 장애 발생: {check_err}\n")
-        return False
-
-    return True
+    print("\n=======================================================")
+    print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
+    print("👉 이유: NAVER_COOKIE 세션 만료, 캡차 차단 또는 해외 IP 제약")
+    print("=======================================================\n")
+    return False
 
 def crawl_via_mobile_api(session, start_date, end_date):
-    """모바일 API 전용 안정적 수집 함수"""
-    now_kst = datetime.now(KST).replace(tzinfo=None)
     all_collected_data = {cat: [] for cat in CATEGORIES}
-    
     page = 1
     stop_crawling = False
     
-    while not stop_crawling and page <= 5:
+    while not stop_crawling and page <= 10:
         api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page={page}"
         resp = session.get(api_url)
         if resp.status_code != 200:
             break
             
-        data = resp.json().get("message", {}).get("result", {}).get("articleList", [])
-        if not data:
+        res_json = resp.json()
+        article_list = res_json.get("message", {}).get("result", {}).get("articleList", [])
+        if not article_list:
             break
             
-        for item in data:
+        for item in article_list:
             article_id = item.get("articleId")
-            subject = item.get("subject")
-            write_date_ts = item.get("writeDateTimestamp") / 1000
+            subject = item.get("subject", "")
+            write_date_ts = item.get("writeDateTimestamp", 0) / 1000
             art_dt = datetime.fromtimestamp(write_date_ts)
             art_date_str = art_dt.strftime("%Y.%m.%d")
             
@@ -244,6 +265,84 @@ def crawl_via_mobile_api(session, start_date, end_date):
                     
         page += 1
         
+    save_or_update_excel(all_collected_data)
+    return True
+
+def crawl_via_pc_html(session, base_url, start_date, end_date):
+    now_kst = datetime.now(KST).replace(tzinfo=None)
+    all_collected_data = {cat: [] for cat in CATEGORIES}
+    stop_crawling = False
+    page = 1
+
+    while not stop_crawling and page <= 10:
+        target_page_url = f"{base_url}&search.page={page}"
+        resp = session.get(target_page_url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        iframe = soup.select_one("#cafe_main")
+        if iframe and iframe.has_attr("src"):
+            iframe_url = "https://cafe.naver.com" + iframe["src"]
+            resp = session.get(iframe_url)
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+        rows = soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
+        if not rows:
+            break
+
+        article_target_list = []
+        for row in rows:
+            notice_check = row.select_one(".ico_notice, .td_notice, .notice, span.type, .ico_type")
+            row_class = " ".join(row.get("class", []))
+            if notice_check or "notice" in row_class or "recommend" in row_class:
+                continue
+
+            title_elem = row.select_one("a.article, a.a-title")
+            date_elem = row.select_one("td.td_date, .td_date, .date, .time")
+            if not title_elem:
+                continue
+            
+            title_text = title_elem.text.strip()
+            date_text = date_elem.text.strip() if date_elem else ""
+            
+            extracted_date_str = extract_valid_date(title_text)
+            if not extracted_date_str:
+                if ":" in date_text:
+                    extracted_date_str = now_kst.strftime("%Y.%m.%d")
+                elif date_text:
+                    extracted_date_str = extract_valid_date(date_text)
+
+            if extracted_date_str:
+                try:
+                    row_date = datetime.strptime(extracted_date_str, "%Y.%m.%d")
+                    if row_date < start_date:
+                        stop_crawling = True
+                        break
+                except ValueError:
+                    pass
+
+            href = title_elem.get('href')
+            if href:
+                article_url = f"https://cafe.naver.com{href}" if href.startswith("/") else href
+                article_target_list.append((article_url, extracted_date_str))
+
+        for art_url, art_date_str in article_target_list:
+            art_resp = session.get(art_url)
+            sub_soup = BeautifulSoup(art_resp.text, "html.parser")
+            
+            sub_iframe = sub_soup.select_one("#cafe_main")
+            if sub_iframe and sub_iframe.has_attr("src"):
+                art_resp = session.get("https://cafe.naver.com" + sub_iframe["src"])
+                sub_soup = BeautifulSoup(art_resp.text, "html.parser")
+
+            parsed_date, art_data = parse_article_content(sub_soup, fallback_date=art_date_str)
+            for cat in CATEGORIES:
+                if art_data[cat]:
+                    all_collected_data[cat].extend(art_data[cat])
+
+        if stop_crawling:
+            break
+        page += 1
+
     save_or_update_excel(all_collected_data)
     return True
 

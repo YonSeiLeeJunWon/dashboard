@@ -10,7 +10,7 @@ from pathlib import Path
 import json
 
 # ============================================================
-# 0. 경로 및 모듈 참조 설정 (GitHub Actions 서버 전용)
+# 0. 경로 설정 및 sys.path 기본 등록
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -275,7 +275,6 @@ def save_or_update_excel(new_data_dict):
                 combined_df = new_df
 
             if not combined_df.empty and "기사 주소" in combined_df.columns:
-                # inplace 경고 해제를 위해 재할당 방식으로 변경
                 combined_df = combined_df.drop_duplicates(subset=["기사 주소"], keep="first")
                 if "연월일" in combined_df.columns:
                     combined_df = combined_df.sort_values(by="연월일", ascending=False)
@@ -294,6 +293,11 @@ def save_or_update_excel(new_data_dict):
 # ============================================================
 def generate_dashboard_and_sync():
     print("\n[2/3] 대시보드 HTML 파일 생성 중...")
+    
+    # 모듈 참조 경로 추가
+    current_dir = str(Path(__file__).resolve().parent)
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
     
     # auto_dashboard_module.py 모듈 호출
     from auto_dashboard_module import build_dashboard

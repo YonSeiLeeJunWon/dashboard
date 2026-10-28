@@ -81,6 +81,7 @@ def extract_valid_date(text):
     return ""
 
 def get_latest_collected_date():
+    """기존 엑셀 파일에서 가장 최근 수집된 뉴스 날짜를 반환 (없으면 None)"""
     if not os.path.exists(NEWS_FILE_PATH):
         return None
     
@@ -103,6 +104,9 @@ def get_latest_collected_date():
     
     return latest_date
 
+# ============================================================
+# 1. 크롤링 로직 (HTTP Request 기반 + 사전 검증 알림 통합)
+# ============================================================
 def parse_article_content(soup, fallback_date=""):
     article_data = {cat: [] for cat in CATEGORIES}
     title_elem = soup.select_one(".title_text, .title_area, .ArticleTitle .title, h3.title_text")
@@ -159,8 +163,63 @@ def parse_article_content(soup, fallback_date=""):
 def crawl_naver_cafe_news_auto():
     # KST 시각 반영
     now_kst = datetime.now(KST).replace(tzinfo=None)
-    latest_dt = get_latest_collected_date()
     
+    # ------------------------------------------------------------
+    # [사전 검증] 네이버 카페 게시글 조회 가능 여부 체크 및 알림
+    # ------------------------------------------------------------
+    print("\n🔍 [검증] 네이버 카페 게시글 조회 가능 여부를 먼저 확인합니다...")
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    
+    naver_cookie = os.getenv("NAVER_COOKIE")
+    if naver_cookie:
+        session.headers.update({"Cookie": naver_cookie})
+        print("🔑 NAVER_COOKIE 헤더 설정 완료.")
+    else:
+        print("⚠️ NAVER_COOKIE 미설정 (비로그인 상태로 조회).")
+
+    try:
+        check_resp = session.get(BASE_URL, timeout=10)
+        check_soup = BeautifulSoup(check_resp.text, "html.parser")
+        
+        iframe = check_soup.select_one("#cafe_main")
+        if iframe and iframe.has_attr("src"):
+            iframe_url = "https://cafe.naver.com" + iframe["src"]
+            check_resp = session.get(iframe_url, timeout=10)
+            check_soup = BeautifulSoup(check_resp.text, "html.parser")
+
+        check_rows = check_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
+        
+        # 일반 게시글 추출
+        valid_sample_rows = []
+        for r in check_rows:
+            notice_check = r.select_one(".ico_notice, .td_notice, .notice, span.type, .ico_type")
+            r_class = " ".join(r.get("class", []))
+            if not notice_check and "notice" not in r_class and "recommend" not in r_class:
+                if r.select_one("a.article, a.a-title"):
+                    valid_sample_rows.append(r)
+
+        if not valid_sample_rows:
+            print("\n=======================================================")
+            print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
+            print("👉 가능 원인:")
+            print("   1) 멤버 전용/비공개 게시판 (NAVER_COOKIE 설정 또는 갱신 필요)")
+            print("   2) 네이버 자동방지 인증(CAPTCHA) 유발 또는 IP 차단")
+            print("   3) 카페 HTML 구조 변경")
+            print("=======================================================\n")
+            # 조회가 안 될 경우 수집을 진행하지 않고 즉시 종료
+            return False
+
+        print(f"✅ [조회 성공 확인] 네이버 카페 게시글 {len(valid_sample_rows)}개가 정상 조회되었습니다. 크롤링을 시작합니다.\n")
+
+    except Exception as check_err:
+        print(f"\n❌ [조회 오류 알림] 카페 접속 중 오류 발생으로 글을 읽어올 수 없습니다: {check_err}\n")
+        return False
+
+    # ------------------------------------------------------------
+    # 본 수집 로직
+    # ------------------------------------------------------------
+    latest_dt = get_latest_collected_date()
     if latest_dt:
         start_date = latest_dt - timedelta(days=1)
         print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
@@ -168,17 +227,8 @@ def crawl_naver_cafe_news_auto():
         start_date = now_kst - timedelta(days=3)
         print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
 
-    end_date = now_kst + timedelta(days=1) # 오늘 자 포함 보장
-    
     print(f"\n[1/3] 클라우드 서버에서 뉴스 수집 시작: {start_date.strftime('%Y.%m.%d')} ~ {now_kst.strftime('%Y.%m.%d')}")
     
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    
-    naver_cookie = os.getenv("NAVER_COOKIE")
-    if naver_cookie:
-        session.headers.update({"Cookie": naver_cookie})
-
     all_collected_data = {cat: [] for cat in CATEGORIES}
     stop_crawling = False
     page = 1
@@ -258,6 +308,7 @@ def crawl_naver_cafe_news_auto():
         page += 1
 
     save_or_update_excel(all_collected_data)
+    return True
 
 def save_or_update_excel(new_data_dict):
     def write_to_excel(writer, data_dict, existing_file_path=None):
@@ -288,6 +339,9 @@ def save_or_update_excel(new_data_dict):
             write_to_excel(writer, new_data_dict)
     print("✓ 엑셀 업데이트 완료.")
 
+# ============================================================
+# 2. 대시보드 빌드 및 index.html 동기화
+# ============================================================
 def generate_dashboard_and_sync():
     print("\n[2/3] 대시보드 HTML 파일 생성 중...")
     current_dir = str(Path(__file__).resolve().parent)
@@ -299,5 +353,8 @@ def generate_dashboard_and_sync():
     print("✓ index.html 및 대시보드 HTML 파일 생성/동기화 완료!")
 
 if __name__ == "__main__":
-    crawl_naver_cafe_news_auto()
-    generate_dashboard_and_sync()
+    success = crawl_naver_cafe_news_auto()
+    if success:
+        generate_dashboard_and_sync()
+    else:
+        print("⚠️ 카페 게시글 조회가 실패하여 대시보드 업데이트 작업을 중단했습니다.")

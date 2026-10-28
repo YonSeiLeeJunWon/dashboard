@@ -8,7 +8,7 @@ from pathlib import Path
 def build_dashboard(data_dir=None):
     """
     DATA/IN/보험뉴스_Data.xlsx 파일의 카테고리별 시트를 읽어와
-    index.html 내의 뉴스 데이터 변수를 최신 데이터로 동적 갱신 후 빌드하는 함수
+    index.html 내의 NEWS_DATA JavaScript 변수를 최신 데이터로 동적 갱신 후 빌드하는 함수
     """
     if data_dir is None:
         base_dir = Path(__file__).resolve().parent
@@ -31,7 +31,6 @@ def build_dashboard(data_dir=None):
             xls = pd.ExcelFile(news_excel_path)
             for sheet_name in xls.sheet_names:
                 df = pd.read_excel(xls, sheet_name=sheet_name)
-                # 데이터 정제
                 df = df.fillna("")
                 records = df.to_dict(orient="records")
                 news_data_dict[sheet_name] = records
@@ -46,23 +45,22 @@ def build_dashboard(data_dir=None):
     with open(index_html_path, "r", encoding="utf-8") as f:
         html_content = f.read()
 
-    # 3. HTML 내부의 NEWS_DATA / newsData JavaScript 데이터 영역 동적 치환
+    # 3. HTML 내부의 NEWS_DATA JavaScript 데이터 영역 동적 치환
     if news_data_dict:
         json_news_data = json.dumps(news_data_dict, ensure_ascii=False, indent=2)
         
-        # Pattern 1: const NEWS_DATA = { ... }; 또는 var newsData = { ... };
         pattern = r"(const\s+NEWS_DATA\s*=\s*|var\s+newsData\s*=\s*|let\s+newsData\s*=\s*)(\{[\s\S]*?\});"
         
         if re.search(pattern, html_content):
+            # 빽슬래시 및 특수문자 에스케이프 처리
             html_content = re.sub(
                 pattern,
-                r"\1" + json_news_data.replace("\\", "\\\\") + ";",
+                lambda m: m.group(1) + json_news_data + ";",
                 html_content,
                 count=1
             )
             print("✓ HTML 내부 뉴스 데이터 변수(NEWS_DATA) 치환 완료")
         else:
-            # 주입 스크립트 태그가 별도로 없을 경우 script 태그 상단에 삽입
             inject_script = f"\n<script>\nconst NEWS_DATA = {json_news_data};\n</script>\n"
             html_content = html_content.replace("</head>", f"{inject_script}</head>")
             print("✓ HTML <head> 내 뉴스 데이터(NEWS_DATA) 신규 주입 완료")
@@ -74,7 +72,7 @@ def build_dashboard(data_dir=None):
     with open(index_html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    print(f"✓ 대시보드 대시보드 빌드 및 동기화 완료: {output_html_path}")
+    print(f"✓ 대시보드 빌드 및 동기화 완료: {output_html_path}")
     return output_html_path
 
 if __name__ == "__main__":

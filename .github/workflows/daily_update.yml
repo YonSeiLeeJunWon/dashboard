@@ -24,7 +24,7 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'
+        # cache: 'pip' 항목 제거 (requirements.txt 가 없을 때 발생하는 오류 방지)
 
     - name: Install dependencies
       run: |

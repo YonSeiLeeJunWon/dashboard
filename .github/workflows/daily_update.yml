@@ -6,7 +6,7 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch: # 깃허브 웹에서 'Run workflow' 버튼으로 수동 실행 가능
 
-# Git Push 권한 부여 (필수)
+# Git Push 권한 부여
 permissions:
   contents: write
 
@@ -18,13 +18,12 @@ jobs:
     - name: Check out repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # Git 히스토리를 전체 가져와 동기화 오류 방지
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        # cache: 'pip' 항목 제거 (requirements.txt 가 없을 때 발생하는 오류 방지)
 
     - name: Install dependencies
       run: |
@@ -33,9 +32,10 @@ jobs:
 
     - name: Run Automation Script
       env:
-        NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }} # Repository Secrets에 등록한 쿠키 전달
+        NAVER_COOKIE: ${{ secrets.NAVER_COOKIE }}
+        PYTHONPATH: .
       run: |
-        python auto_github_action.py
+        python -m auto_github_action
 
     - name: Commit and Push Updated Files
       run: |

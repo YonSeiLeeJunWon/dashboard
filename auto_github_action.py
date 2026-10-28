@@ -26,7 +26,6 @@ NEWS_FILE_PATH = DATA_IN_DIR / "보험뉴스_Data.xlsx"
 INDEX_HTML_PATH = BASE_DIR / "index.html"
 OUT_DASHBOARD_PATH = DATA_OUT_DIR / "보험회사_종합분석_대시보드.html"
 
-# KST (UTC+9) 설정
 KST = timezone(timedelta(hours=9))
 
 CATEGORIES = [
@@ -56,10 +55,12 @@ EXCLUDE_KEYWORDS = [
 PRESS_NAMES = ["경북도민일보", "아주경제", "매일경제", "한국경제", "서울경제", "조선일보", "중앙일보", "동아일보", "연합뉴스", "뉴시스", "뉴스1", "이투데이", "파이낸셜뉴스"]
 CLUB_ID = "31337941"
 MENU_ID = "1"
-BASE_URL = f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.boardtype=L"
+
+# 모바일 네이버 카페 URL 사용 (iframe 및 캡차 방지 우회)
+BASE_URL = f"https://m.cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
@@ -67,11 +68,9 @@ def clean_sheet_name(name):
     return name.strip()[:31]
 
 def extract_valid_date(text):
-    """한 자릿수 월/일 및 다양한 날짜 포맷 정규식 정제"""
     if not text:
         return ""
     cleaned_text = re.sub(r"(20[2-9]\d)0\.", r"\1.", text)
-    # 한 자릿수 월/일 지원 정규식 (예: 2026.10.28, 2026.5.3, 2026.10.28.)
     match = re.search(r"(20[2-9]\d)\.(\d{1,2})\.(\d{1,2})", cleaned_text)
     if match:
         year, month, day = match.groups()
@@ -81,7 +80,6 @@ def extract_valid_date(text):
     return ""
 
 def get_latest_collected_date():
-    """기존 엑셀 파일에서 가장 최근 수집된 뉴스 날짜를 반환 (없으면 None)"""
     if not os.path.exists(NEWS_FILE_PATH):
         return None
     
@@ -104,23 +102,20 @@ def get_latest_collected_date():
     
     return latest_date
 
-# ============================================================
-# 1. 크롤링 로직 (HTTP Request 기반 + 사전 검증 알림 통합)
-# ============================================================
 def parse_article_content(soup, fallback_date=""):
     article_data = {cat: [] for cat in CATEGORIES}
-    title_elem = soup.select_one(".title_text, .title_area, .ArticleTitle .title, h3.title_text")
+    title_elem = soup.select_one(".title_text, .title_area, .ArticleTitle .title, h3.title_text, .tit_box")
     article_date = extract_valid_date(title_elem.get_text(strip=True)) if title_elem else ""
             
     if not article_date:
-        date_elem = soup.select_one(".date_text, .article_writer .date, .date, .ArticleWriter .date, .m-t-13 .date")
+        date_elem = soup.select_one(".date_text, .article_writer .date, .date, .ArticleWriter .date, .m-t-13 .date, .date_time")
         if date_elem:
             article_date = extract_valid_date(date_elem.text)
 
     if not article_date:
         article_date = fallback_date
 
-    main_content = soup.select_one(".article_viewer, .se-main-container, #tbody, .ContentRenderer, .ArticleContentBox") or soup
+    main_content = soup.select_one(".article_viewer, .se-main-container, #tbody, .ContentRenderer, .ArticleContentBox, .post_area") or soup
     current_category_idx = 0
 
     for elem in main_content.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'span', 'a']):
@@ -161,152 +156,94 @@ def parse_article_content(soup, fallback_date=""):
     return article_date, article_data
 
 def crawl_naver_cafe_news_auto():
-    # KST 시각 반영
     now_kst = datetime.now(KST).replace(tzinfo=None)
     
-    # ------------------------------------------------------------
-    # [사전 검증] 네이버 카페 게시글 조회 가능 여부 체크 및 알림
-    # ------------------------------------------------------------
-    print("\n🔍 [검증] 네이버 카페 게시글 조회 가능 여부를 먼저 확인합니다...")
+    print("\n🔍 [검증] 모바일 네이버 카페 접근 및 글 조회 가능 여부 확인 중...")
     session = requests.Session()
     session.headers.update(HEADERS)
     
     naver_cookie = os.getenv("NAVER_COOKIE")
     if naver_cookie:
         session.headers.update({"Cookie": naver_cookie})
-        print("🔑 NAVER_COOKIE 헤더 설정 완료.")
+        print("🔑 NAVER_COOKIE 적용 완료.")
     else:
-        print("⚠️ NAVER_COOKIE 미설정 (비로그인 상태로 조회).")
+        print("⚠️ NAVER_COOKIE 미설정 상태.")
 
     try:
         check_resp = session.get(BASE_URL, timeout=10)
         check_soup = BeautifulSoup(check_resp.text, "html.parser")
         
-        iframe = check_soup.select_one("#cafe_main")
-        if iframe and iframe.has_attr("src"):
-            iframe_url = "https://cafe.naver.com" + iframe["src"]
-            check_resp = session.get(iframe_url, timeout=10)
-            check_soup = BeautifulSoup(check_resp.text, "html.parser")
-
-        check_rows = check_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
+        # PC / 모바일 태그 선택자 지원
+        check_rows = check_soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tr, li.board_box, ul.article-list li")
         
-        # 일반 게시글 추출
-        valid_sample_rows = []
-        for r in check_rows:
-            notice_check = r.select_one(".ico_notice, .td_notice, .notice, span.type, .ico_type")
-            r_class = " ".join(r.get("class", []))
-            if not notice_check and "notice" not in r_class and "recommend" not in r_class:
-                if r.select_one("a.article, a.a-title"):
-                    valid_sample_rows.append(r)
-
-        if not valid_sample_rows:
-            print("\n=======================================================")
-            print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
-            print("👉 가능 원인:")
-            print("   1) 멤버 전용/비공개 게시판 (NAVER_COOKIE 설정 또는 갱신 필요)")
-            print("   2) 네이버 자동방지 인증(CAPTCHA) 유발 또는 IP 차단")
-            print("   3) 카페 HTML 구조 변경")
-            print("=======================================================\n")
-            # 조회가 안 될 경우 수집을 진행하지 않고 즉시 종료
-            return False
-
-        print(f"✅ [조회 성공 확인] 네이버 카페 게시글 {len(valid_sample_rows)}개가 정상 조회되었습니다. 크롤링을 시작합니다.\n")
-
-    except Exception as check_err:
-        print(f"\n❌ [조회 오류 알림] 카페 접속 중 오류 발생으로 글을 읽어올 수 없습니다: {check_err}\n")
-        return False
-
-    # ------------------------------------------------------------
-    # 본 수집 로직
-    # ------------------------------------------------------------
-    latest_dt = get_latest_collected_date()
-    if latest_dt:
-        start_date = latest_dt - timedelta(days=1)
-        print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
-    else:
-        start_date = now_kst - timedelta(days=3)
-        print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
-
-    print(f"\n[1/3] 클라우드 서버에서 뉴스 수집 시작: {start_date.strftime('%Y.%m.%d')} ~ {now_kst.strftime('%Y.%m.%d')}")
-    
-    all_collected_data = {cat: [] for cat in CATEGORIES}
-    stop_crawling = False
-    page = 1
-
-    while not stop_crawling and page <= 10:
-        target_page_url = f"{BASE_URL}&search.page={page}"
-        resp = session.get(target_page_url)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        iframe = soup.select_one("#cafe_main")
-        if iframe and iframe.has_attr("src"):
-            iframe_url = "https://cafe.naver.com" + iframe["src"]
-            resp = session.get(iframe_url)
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-        rows = soup.select("#main-area .article-board tr, #main-area .board-list tr, .article-board tbody tr, .article-board tr")
-        if not rows:
-            break
-
-        article_target_list = []
-        for row in rows:
-            notice_check = row.select_one(".ico_notice, .td_notice, .notice, span.type, .ico_type")
-            row_class = " ".join(row.get("class", []))
-            if notice_check or "notice" in row_class or "recommend" in row_class:
-                continue
-
-            num_elem = row.select_one("td.td_article, .inner_number, .td_num")
-            if num_elem and not num_elem.text.strip().isdigit():
-                continue
-
-            title_elem = row.select_one("a.article, a.a-title")
-            date_elem = row.select_one("td.td_date, .td_date, .date, .time")
-            if not title_elem:
-                continue
-            
-            title_text = title_elem.text.strip()
-            date_text = date_elem.text.strip() if date_elem else ""
-            
-            extracted_date_str = extract_valid_date(title_text)
-            if not extracted_date_str:
-                if ":" in date_text: # 당일 게시물 시간 형태 (10:25 등)
-                    extracted_date_str = now_kst.strftime("%Y.%m.%d")
-                elif date_text:
-                    extracted_date_str = extract_valid_date(date_text)
-
-            if extracted_date_str:
+        if not check_rows:
+            # 모바일 API 직접 수출 시도
+            api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page=1"
+            api_resp = session.get(api_url, timeout=10)
+            if api_resp.status_code == 200:
                 try:
-                    row_date = datetime.strptime(extracted_date_str, "%Y.%m.%d")
-                    if row_date < start_date:
-                        stop_crawling = True
-                        break
-                except ValueError:
+                    res_json = api_resp.json()
+                    article_list = res_json.get("message", {}).get("result", {}).get("articleList", [])
+                    if article_list:
+                        print(f"✅ [API 조회 성공] 모바일 API를 통해 게시글 {len(article_list)}개를 확인했습니다.")
+                        return crawl_via_mobile_api(session, start_date=now_kst - timedelta(days=3), end_date=now_kst)
+                except Exception:
                     pass
 
-            href = title_elem.get('href')
-            if href:
-                article_url = f"https://cafe.naver.com{href}" if href.startswith("/") else href
-                article_target_list.append((article_url, extracted_date_str))
+            print("\n=======================================================")
+            print("❌ [조회 실패 알림] 네이버 카페 글이 조회가 되지 않습니다!")
+            print("👉 이유: NAVER_COOKIE 세션 만료, 캡차 차단 또는 해외 IP 제약")
+            print("=======================================================\n")
+            return False
 
-        for art_url, art_date_str in article_target_list:
+        print("✅ [조회 성공 확인] 네이버 카페 게시글 조회가 정상 확인되었습니다.\n")
+
+    except Exception as check_err:
+        print(f"\n❌ [조회 오류] 접속 장애 발생: {check_err}\n")
+        return False
+
+    return True
+
+def crawl_via_mobile_api(session, start_date, end_date):
+    """모바일 API 전용 안정적 수집 함수"""
+    now_kst = datetime.now(KST).replace(tzinfo=None)
+    all_collected_data = {cat: [] for cat in CATEGORIES}
+    
+    page = 1
+    stop_crawling = False
+    
+    while not stop_crawling and page <= 5:
+        api_url = f"https://m.cafe.naver.com/api/cafe/{CLUB_ID}/menu/{MENU_ID}/articles?page={page}"
+        resp = session.get(api_url)
+        if resp.status_code != 200:
+            break
+            
+        data = resp.json().get("message", {}).get("result", {}).get("articleList", [])
+        if not data:
+            break
+            
+        for item in data:
+            article_id = item.get("articleId")
+            subject = item.get("subject")
+            write_date_ts = item.get("writeDateTimestamp") / 1000
+            art_dt = datetime.fromtimestamp(write_date_ts)
+            art_date_str = art_dt.strftime("%Y.%m.%d")
+            
+            if art_dt < start_date:
+                stop_crawling = True
+                break
+                
+            art_url = f"https://m.cafe.naver.com/ArticleRead.nhn?clubid={CLUB_ID}&articleid={article_id}"
             art_resp = session.get(art_url)
             sub_soup = BeautifulSoup(art_resp.text, "html.parser")
             
-            sub_iframe = sub_soup.select_one("#cafe_main")
-            if sub_iframe and sub_iframe.has_attr("src"):
-                art_resp = session.get("https://cafe.naver.com" + sub_iframe["src"])
-                sub_soup = BeautifulSoup(art_resp.text, "html.parser")
-
             parsed_date, art_data = parse_article_content(sub_soup, fallback_date=art_date_str)
-
             for cat in CATEGORIES:
                 if art_data[cat]:
                     all_collected_data[cat].extend(art_data[cat])
-
-        if stop_crawling:
-            break
+                    
         page += 1
-
+        
     save_or_update_excel(all_collected_data)
     return True
 
@@ -339,9 +276,6 @@ def save_or_update_excel(new_data_dict):
             write_to_excel(writer, new_data_dict)
     print("✓ 엑셀 업데이트 완료.")
 
-# ============================================================
-# 2. 대시보드 빌드 및 index.html 동기화
-# ============================================================
 def generate_dashboard_and_sync():
     print("\n[2/3] 대시보드 HTML 파일 생성 중...")
     current_dir = str(Path(__file__).resolve().parent)

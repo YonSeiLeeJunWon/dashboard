@@ -2,7 +2,6 @@ import os
 import re
 import sys
 import time
-import importlib.util
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import requests
@@ -11,13 +10,11 @@ from pathlib import Path
 import json
 
 # ============================================================
-# 0. 경로 및 한국 표준시(KST) 타임존 설정
+# 0. 경로 및 시간 설정 (KST 한국 표준시 적용)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
-
-KST = timezone(timedelta(hours=9))
 
 DATA_IN_DIR = BASE_DIR / "DATA" / "IN"
 DATA_OUT_DIR = BASE_DIR / "DATA" / "OUT"
@@ -28,6 +25,9 @@ os.makedirs(DATA_OUT_DIR, exist_ok=True)
 NEWS_FILE_PATH = DATA_IN_DIR / "보험뉴스_Data.xlsx"
 INDEX_HTML_PATH = BASE_DIR / "index.html"
 OUT_DASHBOARD_PATH = DATA_OUT_DIR / "보험회사_종합분석_대시보드.html"
+
+# KST (UTC+9) 설정
+KST = timezone(timedelta(hours=9))
 
 CATEGORIES = [
     "보험공통(IFRS17, K-ICS 등)",
@@ -59,44 +59,28 @@ MENU_ID = "1"
 BASE_URL = f"https://cafe.naver.com/ArticleList.nhn?search.clubid={CLUB_ID}&search.menuid={MENU_ID}&search.boardtype=L"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
 def clean_sheet_name(name):
     return name.strip()[:31]
 
 def extract_valid_date(text):
-    """다양한 날짜 형식을 감지하여 YYYY.MM.DD 형태로 정규화"""
+    """한 자릿수 월/일 및 다양한 날짜 포맷 정규식 정제"""
     if not text:
         return ""
-    
-    # 1) YYYY.MM.DD 또는 YYYY-MM-DD
-    match = re.search(r"(20[2-9]\d)[.-](\d{1,2})[.-](\d{1,2})", text)
+    cleaned_text = re.sub(r"(20[2-9]\d)0\.", r"\1.", text)
+    # 한 자릿수 월/일 지원 정규식 (예: 2026.10.28, 2026.5.3, 2026.10.28.)
+    match = re.search(r"(20[2-9]\d)\.(\d{1,2})\.(\d{1,2})", cleaned_text)
     if match:
         year, month, day = match.groups()
-        if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-            return f"{year}.{int(month):02d}.{int(day):02d}"
-
-    # 2) YY.MM.DD
-    match = re.search(r"\b(2[2-9])[.-](\d{1,2})[.-](\d{1,2})", text)
-    if match:
-        yy, month, day = match.groups()
-        if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-            return f"20{yy}.{int(month):02d}.{int(day):02d}"
-
-    # 3) MM.DD (올해 년도 자동 부여)
-    match = re.search(r"\b(\d{1,2})[.-](\d{1,2})\b", text)
-    if match:
-        month, day = match.groups()
-        m, d = int(month), int(day)
-        if 1 <= m <= 12 and 1 <= d <= 31:
-            kst_now = datetime.now(KST)
-            return f"{kst_now.year}.{m:02d}.{d:02d}"
-
+        m_int, d_int = int(month), int(day)
+        if 1 <= m_int <= 12 and 1 <= d_int <= 31:
+            return f"{year}.{m_int:02d}.{d_int:02d}"
     return ""
 
 def get_latest_collected_date():
-    """기존 엑셀 파일에서 가장 최근 수집된 뉴스 날짜를 반환 (없으면 None)"""
     if not os.path.exists(NEWS_FILE_PATH):
         return None
     
@@ -119,9 +103,6 @@ def get_latest_collected_date():
     
     return latest_date
 
-# ============================================================
-# 1. 크롤링 로직 (HTTP Request 기반)
-# ============================================================
 def parse_article_content(soup, fallback_date=""):
     article_data = {cat: [] for cat in CATEGORIES}
     title_elem = soup.select_one(".title_text, .title_area, .ArticleTitle .title, h3.title_text")
@@ -169,33 +150,27 @@ def parse_article_content(soup, fallback_date=""):
                     article_data[target_cat].append({
                         "기사 제목": news_title,
                         "연월일": article_date,
-                        "기사 주소": news_url
+                        "기사 주소": news_url,
+                        "메모": ""
                     })
 
     return article_date, article_data
 
 def crawl_naver_cafe_news_auto():
-    # KST 기준 현재 날짜/시간 구하기
-    now_kst = datetime.now(KST)
+    # KST 시각 반영
+    now_kst = datetime.now(KST).replace(tzinfo=None)
     latest_dt = get_latest_collected_date()
     
     if latest_dt:
-        start_date = (latest_dt - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 보수적 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
+        start_date = latest_dt - timedelta(days=1)
+        print(f"📌 기존 엑셀 최신 수집일 감지: {latest_dt.strftime('%Y.%m.%d')} -> 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
     else:
-        start_date = (now_kst - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = now_kst - timedelta(days=3)
         print(f"📌 기존 수집 데이터 없음 -> 기본 수집 시작일: {start_date.strftime('%Y.%m.%d')}")
 
-    # end_date를 오늘(KST) 23:59:59로 설정하여 당일 수집글이 스킵되지 않도록 방지
-    end_date = now_kst.replace(hour=23, minute=59, second=59, microsecond=999999)
+    end_date = now_kst + timedelta(days=1) # 오늘 자 포함 보장
     
-    start_date_naive = start_date.replace(tzinfo=None)
-    end_date_naive = end_date.replace(tzinfo=None)
-
-    start_date_str = start_date_naive.strftime("%Y.%m.%d")
-    end_date_str = end_date_naive.strftime("%Y.%m.%d")
-    
-    print(f"\n[1/3] 클라우드 서버에서 뉴스 수집 시작 (KST 기준): {start_date_str} ~ {end_date_str}")
+    print(f"\n[1/3] 클라우드 서버에서 뉴스 수집 시작: {start_date.strftime('%Y.%m.%d')} ~ {now_kst.strftime('%Y.%m.%d')}")
     
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -208,7 +183,7 @@ def crawl_naver_cafe_news_auto():
     stop_crawling = False
     page = 1
 
-    while not stop_crawling:
+    while not stop_crawling and page <= 10:
         target_page_url = f"{BASE_URL}&search.page={page}"
         resp = session.get(target_page_url)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -244,7 +219,7 @@ def crawl_naver_cafe_news_auto():
             
             extracted_date_str = extract_valid_date(title_text)
             if not extracted_date_str:
-                if ":" in date_text:
+                if ":" in date_text: # 당일 게시물 시간 형태 (10:25 등)
                     extracted_date_str = now_kst.strftime("%Y.%m.%d")
                 elif date_text:
                     extracted_date_str = extract_valid_date(date_text)
@@ -252,9 +227,7 @@ def crawl_naver_cafe_news_auto():
             if extracted_date_str:
                 try:
                     row_date = datetime.strptime(extracted_date_str, "%Y.%m.%d")
-                    if row_date > end_date_naive:
-                        continue
-                    elif row_date < start_date_naive:
+                    if row_date < start_date:
                         stop_crawling = True
                         break
                 except ValueError:
@@ -275,7 +248,6 @@ def crawl_naver_cafe_news_auto():
                 sub_soup = BeautifulSoup(art_resp.text, "html.parser")
 
             parsed_date, art_data = parse_article_content(sub_soup, fallback_date=art_date_str)
-            final_date = parsed_date if parsed_date else art_date_str
 
             for cat in CATEGORIES:
                 if art_data[cat]:
@@ -316,32 +288,14 @@ def save_or_update_excel(new_data_dict):
             write_to_excel(writer, new_data_dict)
     print("✓ 엑셀 업데이트 완료.")
 
-# ============================================================
-# 2. 대시보드 빌드 및 index.html 동기화
-# ============================================================
 def generate_dashboard_and_sync():
     print("\n[2/3] 대시보드 HTML 파일 생성 중...")
+    current_dir = str(Path(__file__).resolve().parent)
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
     
-    try:
-        from auto_dashboard_module import build_dashboard
-    except ModuleNotFoundError:
-        module_path = BASE_DIR / "auto_dashboard_module.py"
-        if not module_path.exists():
-            raise FileNotFoundError(f"⚠️ {module_path} 파일이 존재하지 않습니다.")
-        spec = importlib.util.spec_from_file_location("auto_dashboard_module", module_path)
-        auto_dashboard_module = importlib.util.module_from_spec(spec)
-        sys.modules["auto_dashboard_module"] = auto_dashboard_module
-        spec.loader.exec_module(auto_dashboard_module)
-        build_dashboard = auto_dashboard_module.build_dashboard
-
+    from auto_dashboard_module import build_dashboard
     output_html_path = build_dashboard(data_dir=DATA_IN_DIR)
-    
-    with open(output_html_path, "r", encoding="utf-8") as f_src:
-        html_content = f_src.read()
-
-    with open(INDEX_HTML_PATH, "w", encoding="utf-8") as f_dst:
-        f_dst.write(html_content)
-
     print("✓ index.html 및 대시보드 HTML 파일 생성/동기화 완료!")
 
 if __name__ == "__main__":
